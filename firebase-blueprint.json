@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["ADMIN", "TECHNICIAN"] },
+        "area": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE"] }
+      },
+      "required": ["uid", "role", "status"]
+    },
+    "Asset": {
+      "title": "Asset",
+      "description": "Bio-medical equipment or asset",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "serialNumber": { "type": "string" },
+        "brand": { "type": "string" },
+        "model": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "INACTIVE", "ARCHIVED"] },
+        "activities": { "type": "array" }
+      },
+      "required": ["name", "status"]
+    },
+    "WorkOrder": {
+      "title": "Work Order",
+      "description": "Maintenance task or intervention",
+      "type": "object",
+      "properties": {
+        "orderNumber": { "type": "string" },
+        "assetId": { "type": "string" },
+        "assetName": { "type": "string" },
+        "priority": { "type": "string", "enum": ["ALTA", "MEDIA", "BAJA"] },
+        "status": { "type": "string", "enum": ["PENDIENTE", "EN_PROGRESO", "COMPLETADA"] },
+        "assignedTechnicians": { "type": "array" },
+        "tasks": { "type": "array" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "cost": { "type": "number" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["orderNumber", "assetId", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Global users collection"
+    },
+    "/assets/{assetId}": {
+      "schema": "Asset",
+      "description": "Equipments collection"
+    },
+    "/orders/{orderId}": {
+      "schema": "WorkOrder",
+      "description": "Maintenance work orders"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Mant SC Pro",
+  "description": "Software Profesional de Gestión de Mantenimiento CMMS - Gestión de activos hospitalarios, órdenes de trabajo preventivas y programación anual.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
