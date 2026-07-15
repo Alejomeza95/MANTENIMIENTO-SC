@@ -13,10 +13,12 @@ import {
   EyeOff,
   User as UserIcon,
   Edit2,
-  Loader2
+  Loader2,
+  MapPin,
+  Trash2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { Technician, TechnicianArea, User } from '../../types';
+import { Technician, TechnicianArea, User, Location } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { useFirestoreCollection, addFirestoreDoc, updateFirestoreDoc, deleteFirestoreDoc } from '../../lib/firestoreHooks';
 
@@ -24,19 +26,23 @@ const AREAS: TechnicianArea[] = ['Mecánico', 'Eléctrico', 'Electrónico', 'Bio
 
 export default function TechniciansPage() {
   const { data: users, loading } = useFirestoreCollection<User>('users');
+  const { data: locations } = useFirestoreCollection<Location>('locations');
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [formData, setFormData] = useState({
     username: '',
     password: '',
+    email: '',
     firstName: '',
     lastName: '',
     phone: '',
     area: 'Mecánico' as TechnicianArea,
+    locationId: '',
     status: 'ACTIVE' as 'ACTIVE' | 'INACTIVE'
   });
 
@@ -49,20 +55,19 @@ export default function TechniciansPage() {
     setIsSubmitting(true);
     
     try {
+      const payload = {
+        ...formData,
+        name: `${formData.firstName} ${formData.lastName}`.trim(),
+        updatedAt: new Date().toISOString()
+      };
+
       if (editingId) {
-        const updateData: any = { ...formData };
-        if (!formData.password) delete updateData.password;
-        
-        await updateFirestoreDoc('users', editingId, {
-          ...updateData,
-          updatedAt: new Date().toISOString()
-        });
+        await updateFirestoreDoc('users', editingId, payload);
       } else {
         const newTech: any = {
-          ...formData,
+          ...payload,
           role: 'TECHNICIAN',
-          createdAt: new Date().toISOString(),
-          email: `${formData.username.toLowerCase()}@purebackbone.com` // Dummy email for consistency if needed
+          createdAt: new Date().toISOString()
         };
         await addFirestoreDoc('users', newTech);
       }
@@ -78,23 +83,31 @@ export default function TechniciansPage() {
     setEditingId(tech.id);
     setFormData({
       username: tech.username,
-      password: '', // Don't show password
+      password: tech.password || '',
+      email: tech.email || '',
       firstName: tech.firstName,
       lastName: tech.lastName,
       phone: tech.phone || '',
       area: tech.area,
+      locationId: tech.locationId || '',
       status: tech.status
     });
     setIsModalOpen(true);
   };
 
-  const handleDelete = async (id: string) => {
-    if (confirm('¿Está seguro de eliminar este perfil de técnico? Esta acción no se puede deshacer.')) {
-      try {
-        await deleteFirestoreDoc('users', id);
-      } catch (err) {
-        console.error(err);
-      }
+  const handleDelete = (id: string) => {
+    setDeleteConfirmId(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmId) return;
+    try {
+      await deleteFirestoreDoc('users', deleteConfirmId);
+    } catch (err) {
+      console.error(err);
+      alert('Error al eliminar el técnico');
+    } finally {
+      setDeleteConfirmId(null);
     }
   };
 
@@ -113,10 +126,12 @@ export default function TechniciansPage() {
     setFormData({
       username: '',
       password: '',
+      email: '',
       firstName: '',
       lastName: '',
       phone: '',
       area: 'Mecánico',
+      locationId: '',
       status: 'ACTIVE'
     });
     setShowPassword(false);
@@ -173,6 +188,7 @@ export default function TechniciansPage() {
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Técnico</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Usuario</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Especialidad</th>
+              <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Sede</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estado</th>
               <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-right">Acciones</th>
             </tr>
@@ -205,8 +221,7 @@ export default function TechniciansPage() {
                       {tech.status === 'ACTIVE' && <BadgeCheck size={14} className="text-blue-500" />}
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5">
-                      <Phone size={10} className="text-slate-400" />
-                      <span className="text-[10px] text-slate-500 font-medium">{tech.phone || 'N/A'}</span>
+                      <span className="text-[10px] text-slate-400 font-medium">{tech.email}</span>
                     </div>
                   </td>
                   <td className="px-6 py-3">
@@ -216,6 +231,14 @@ export default function TechniciansPage() {
                     <div className="flex items-center gap-2">
                        <Shield size={12} className="text-slate-400" />
                        <span className="text-[10px] font-bold uppercase text-slate-500">{tech.area}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-3">
+                    <div className="flex items-center gap-2">
+                       <MapPin size={12} className="text-slate-400" />
+                       <span className="text-[10px] font-bold uppercase text-slate-500 truncate max-w-[120px]">
+                         {locations.find(l => l.id === tech.locationId)?.place || 'S/A'}
+                       </span>
                     </div>
                   </td>
                   <td className="px-6 py-3 text-center">
@@ -240,12 +263,19 @@ export default function TechniciansPage() {
                         className={cn(
                           "p-2 rounded-lg transition-all border border-transparent",
                           tech.status === 'ACTIVE' 
-                            ? "text-slate-400 hover:text-rose-600 hover:bg-white hover:border-slate-100" 
+                            ? "text-slate-400 hover:text-amber-600 hover:bg-white hover:border-slate-100" 
                             : "text-slate-400 hover:text-emerald-600 hover:bg-white hover:border-slate-100"
                         )}
                         title={tech.status === 'ACTIVE' ? "Desactivar" : "Activar"}
                       >
                         {tech.status === 'ACTIVE' ? <XCircle size={16} /> : <CheckCircle size={16} />}
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(tech.id)}
+                        className="p-2 text-slate-400 hover:text-rose-600 hover:bg-white border border-transparent hover:border-slate-100 rounded-lg transition-all"
+                        title="Eliminar"
+                      >
+                        <Trash2 size={16} />
                       </button>
                     </div>
                   </td>
@@ -264,6 +294,52 @@ export default function TechniciansPage() {
           </div>
         )}
       </div>
+
+      <AnimatePresence>
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                  <Trash2 size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Confirmar Eliminación</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de que desea eliminar este técnico? Esta acción no se puede deshacer.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Eliminar Técnico
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       <AnimatePresence>
         {isModalOpen && (
@@ -334,25 +410,15 @@ export default function TechniciansPage() {
                     </div>
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">
-                      {editingId ? 'Nueva Contraseña (Opcional)' : 'Contraseña'}
-                    </label>
-                    <div className="relative">
-                      <input 
-                        required={!editingId}
-                        type={showPassword ? "text" : "password"} 
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-600/5 focus:border-blue-600 outline-none transition-all text-sm font-medium"
-                        value={formData.password}
-                        onChange={(e) => setFormData({...formData, password: e.target.value})}
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowPassword(!showPassword)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
-                      >
-                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
-                      </button>
-                    </div>
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Correo Electrónico (Google)</label>
+                    <input 
+                      required
+                      type="email" 
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-600/5 focus:border-blue-600 outline-none transition-all text-sm font-medium"
+                      value={formData.email}
+                      onChange={(e) => setFormData({...formData, email: e.target.value})}
+                      placeholder="usuario@gmail.com"
+                    />
                   </div>
                 </div>
 
@@ -367,6 +433,29 @@ export default function TechniciansPage() {
                     />
                   </div>
                   <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Contraseña de Acceso</label>
+                    <div className="relative">
+                      <input 
+                        required={!editingId}
+                        type={showPassword ? "text" : "password"} 
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-600/5 focus:border-blue-600 outline-none transition-all text-sm font-medium"
+                        value={formData.password}
+                        onChange={(e) => setFormData({...formData, password: e.target.value})}
+                        placeholder={editingId ? "Dejar en blanco para no cambiar" : "*******"}
+                      />
+                      <button 
+                        type="button"
+                        onClick={() => setShowPassword(!showPassword)}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors"
+                      >
+                        {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Área / Especialidad</label>
                     <select 
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-600/5 focus:border-blue-600 outline-none transition-all text-sm font-medium appearance-none"
@@ -375,6 +464,20 @@ export default function TechniciansPage() {
                     >
                       {AREAS.map(a => (
                         <option key={a} value={a}>{a}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Sede / Ubicación</label>
+                    <select 
+                      required
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-4 focus:ring-blue-600/5 focus:border-blue-600 outline-none transition-all text-sm font-medium appearance-none"
+                      value={formData.locationId}
+                      onChange={(e) => setFormData({...formData, locationId: e.target.value})}
+                    >
+                      <option value="">Seleccionar Sede...</option>
+                      {locations.map(loc => (
+                        <option key={loc.id} value={loc.id}>{loc.name}</option>
                       ))}
                     </select>
                   </div>

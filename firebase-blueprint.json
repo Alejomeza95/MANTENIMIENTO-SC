@@ -30,6 +30,20 @@
       },
       "required": ["name", "status"]
     },
+    "Location": {
+      "title": "Location",
+      "description": "Facilities and locations for maintenance",
+      "type": "object",
+      "properties": {
+        "department": { "type": "string" },
+        "city": { "type": "string" },
+        "place": { "type": "string" },
+        "name": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["department", "city", "place", "name", "createdAt"]
+    },
     "WorkOrder": {
       "title": "Work Order",
       "description": "Maintenance task or intervention",
@@ -58,6 +72,10 @@
     "/assets/{assetId}": {
       "schema": "Asset",
       "description": "Equipments collection"
+    },
+    "/locations/{locationId}": {
+      "schema": "Location",
+      "description": "Locations for maintenance"
     },
     "/orders/{orderId}": {
       "schema": "WorkOrder",

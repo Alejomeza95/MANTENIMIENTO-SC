@@ -16,24 +16,32 @@ import {
   Edit2,
   FileDown,
   Calendar,
-  Loader2
+  Loader2,
+  FileSpreadsheet,
+  MapPin,
+  Layers
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { Asset, MaintenanceActivity } from '../../types';
+import { Asset, MaintenanceActivity, Location, SparePart } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuthStore } from '../../store/useAuthStore';
-import { useFirestoreCollection, addFirestoreDoc, updateFirestoreDoc } from '../../lib/firestoreHooks';
+import { useFirestoreCollection, addFirestoreDoc, updateFirestoreDoc, deleteFirestoreDoc } from '../../lib/firestoreHooks';
+import { jsPDF } from 'jspdf';
 
 export default function AssetsPage() {
   const { user } = useAuthStore();
   const isAdmin = user?.role === 'ADMIN';
 
   const { data: assets, loading: loadingAssets } = useFirestoreCollection<Asset>('assets');
+  const { data: locations } = useFirestoreCollection<Location>('locations');
+  const { data: spareParts } = useFirestoreCollection<SparePart>('spare_parts');
 
   const [activities, setActivities] = useState<MaintenanceActivity[]>([
-    { id: '1', description: '', frequencyWeeks: 4 }
+    { id: '1', description: '', frequencyWeeks: 4, type: 'MAINTENANCE' }
   ]);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [archiveConfirmId, setArchiveConfirmId] = useState<string | null>(null);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -49,6 +57,7 @@ export default function AssetsPage() {
     manufacturerInfo: '',
     supplierInfo: '',
     institutionalInventoryNumber: '',
+    locationId: '',
   });
 
   // File Upload State
@@ -56,12 +65,13 @@ export default function AssetsPage() {
   const [manualUrl, setManualUrl] = useState<string | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [quantity, setQuantity] = useState(1);
 
   const imageInputRef = useRef<HTMLInputElement>(null);
   const manualInputRef = useRef<HTMLInputElement>(null);
 
   const addActivity = () => {
-    setActivities([...activities, { id: Math.random().toString(36).substr(2, 9), description: '', frequencyWeeks: 4, priority: 'MEDIA' }]);
+    setActivities([...activities, { id: Math.random().toString(36).substr(2, 9), description: '', frequencyWeeks: 4, priority: 'MEDIA', type: 'MAINTENANCE' }]);
   };
 
   const removeActivity = (id: string) => {
@@ -132,11 +142,13 @@ export default function AssetsPage() {
       manufacturerInfo: '',
       supplierInfo: '',
       institutionalInventoryNumber: '',
+      locationId: '',
     });
-    setActivities([{ id: '1', description: '', frequencyWeeks: 4, priority: 'MEDIA' }]);
+    setActivities([{ id: '1', description: '', frequencyWeeks: 4, priority: 'MEDIA', type: 'MAINTENANCE' }]);
     setEditingId(null);
     removeImage();
     removeManual();
+    setQuantity(1);
   };
 
   const editAsset = (asset: Asset, e: React.MouseEvent) => {
@@ -155,8 +167,9 @@ export default function AssetsPage() {
       manufacturerInfo: asset.manufacturerInfo || '',
       supplierInfo: asset.supplierInfo || '',
       institutionalInventoryNumber: asset.institutionalInventoryNumber || '',
+      locationId: asset.locationId || '',
     });
-    setActivities(asset.activities.length > 0 ? asset.activities.map(a => ({ ...a, priority: a.priority || 'MEDIA' })) : [{ id: '1', description: '', frequencyWeeks: 4, priority: 'MEDIA' }]);
+    setActivities(asset.activities.length > 0 ? asset.activities.map(a => ({ ...a, priority: a.priority || 'MEDIA', type: a.type || 'MAINTENANCE' })) : [{ id: '1', description: '', frequencyWeeks: 4, priority: 'MEDIA', type: 'MAINTENANCE' }]);
     setEditingId(asset.id);
     setImagePreview(asset.imageUrl || null);
     setManualUrl(asset.manualUrl || null);
@@ -164,19 +177,42 @@ export default function AssetsPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const archiveAsset = async (id: string, e: React.MouseEvent) => {
+  const archiveAsset = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('¿Está seguro de dar de baja este equipo? Se moverá al módulo de Archivo y no se programarán nuevas tareas.')) {
-      try {
-        await updateFirestoreDoc('assets', id, { status: 'ARCHIVED' });
-        if (selectedAsset?.id === id) {
-          setSelectedAsset(null);
-        }
-        setNotification('Equipo movido al archivo exitosamente.');
-        setTimeout(() => setNotification(null), 3000);
-      } catch (err) {
-        console.error(err);
+    setArchiveConfirmId(id);
+  };
+
+  const confirmArchive = async () => {
+    if (!archiveConfirmId) return;
+    try {
+      await updateFirestoreDoc('assets', archiveConfirmId, { status: 'ARCHIVED' });
+      if (selectedAsset?.id === archiveConfirmId) {
+        setSelectedAsset(null);
       }
+      setNotification('Equipo movido al archivo exitosamente.');
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert('Error al archivar el equipo');
+    } finally {
+      setArchiveConfirmId(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmId) return;
+    try {
+      await deleteFirestoreDoc('assets', deleteConfirmId);
+      if (selectedAsset?.id === deleteConfirmId) {
+        setSelectedAsset(null);
+      }
+      setNotification('Equipo eliminado permanentemente.');
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert('Error al eliminar el equipo');
+    } finally {
+      setDeleteConfirmId(null);
     }
   };
 
@@ -197,12 +233,18 @@ export default function AssetsPage() {
         await updateFirestoreDoc('assets', editingId, assetData);
         setNotification('¡Equipo actualizado correctamente!');
       } else {
-        await addFirestoreDoc('assets', {
-          ...assetData,
-          createdAt: new Date().toISOString(),
-          status: 'ACTIVE'
-        });
-        setNotification('¡Equipo creado correctamente!');
+        // Bulk creation
+        for (let i = 0; i < quantity; i++) {
+          const suffix = quantity > 1 ? ` (${i + 1})` : '';
+          await addFirestoreDoc('assets', {
+            ...assetData,
+            name: assetData.name + suffix,
+            serialNumber: assetData.serialNumber ? assetData.serialNumber + (quantity > 1 ? `-${i + 1}` : '') : '',
+            createdAt: new Date().toISOString(),
+            status: 'ACTIVE'
+          });
+        }
+        setNotification(quantity > 1 ? `¡${quantity} equipos creados correctamente!` : '¡Equipo creado correctamente!');
       }
 
       resetForm();
@@ -212,6 +254,132 @@ export default function AssetsPage() {
       setIsSubmitting(false);
       setTimeout(() => setNotification(null), 3000);
     }
+  };
+
+  const downloadAssetResume = (asset: Asset) => {
+    const doc = new jsPDF();
+    const margin = 20;
+    let y = 20;
+
+    // Header Box
+    doc.setFillColor(15, 23, 42); // slate-900
+    doc.rect(0, 0, 210, 40, 'F');
+    
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('HOJA DE VIDA DEL EQUIPO', margin, 25);
+    
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    const today = new Date().toLocaleDateString();
+    doc.text(`FECHA DE GENERACIÓN: ${today}`, margin, 33);
+    
+    y = 55;
+    
+    // 1. IDENTIFICACIÓN
+    doc.setTextColor(15, 23, 42);
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('1. IDENTIFICACIÓN GENERAL', margin, y);
+    y += 10;
+    
+    doc.setFontSize(10);
+    const idFields = [
+      ['NOMBRE:', asset.name],
+      ['UBICACIÓN:', locations.find(l => l.id === asset.locationId)?.name || 'NO ASIGNADA'],
+      ['MARCA:', asset.brand || 'N/A'],
+      ['MODELO:', asset.model || 'N/A'],
+      ['SERIE:', asset.serialNumber || 'N/A'],
+      ['ID INVENTARIO:', asset.institutionalInventoryNumber || 'N/A'],
+      ['AÑO FABRICACIÓN:', asset.year?.toString() || 'N/A'],
+      ['TIPO:', asset.type || 'INTERNO']
+    ];
+    
+    idFields.forEach(([label, value]) => {
+      doc.setFont('helvetica', 'bold');
+      doc.text(label, margin, y);
+      doc.setFont('helvetica', 'normal');
+      doc.text(value || '', margin + 50, y);
+      y += 7;
+    });
+
+    if (asset.imageUrl) {
+      try {
+        doc.addImage(asset.imageUrl, 'JPEG', 145, 60, 45, 45);
+      } catch (e) {}
+    }
+
+    if (asset.manualUrl) {
+      doc.setFontSize(9);
+      doc.setTextColor(37, 99, 235);
+      doc.text('MANUAL TÉCNICO DISPONIBLE EN EL SISTEMA', margin, y);
+      doc.setTextColor(15, 23, 42);
+      y += 7;
+    }
+    
+    y += 10;
+    
+    // 2. ESPECIFICACIONES TÉCNICAS Y LEGALES
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('2. ESPECIFICACIONES TÉCNICAS Y LEGALES', margin, y);
+    y += 10;
+    
+    doc.setFontSize(10);
+    const legalFields = [
+      ['REGISTRO INVIMA:', asset.invimaRegistration || 'N/A'],
+      ['PERMISO COMERCIALIZACIÓN:', asset.commercializationPermit || 'N/A'],
+      ['FABRICANTE:', asset.manufacturerInfo || 'N/A'],
+      ['PROVEEDOR:', asset.supplierInfo || 'N/A']
+    ];
+    
+    legalFields.forEach(([label, value]) => {
+      doc.setFont('helvetica', 'bold');
+      doc.text(label, margin, y);
+      doc.setFont('helvetica', 'normal');
+      doc.text(value || '', margin + 70, y);
+      y += 7;
+    });
+    
+    y += 10;
+    
+    // 3. PLAN DE MANTENIMIENTO
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('3. PLAN DE MANTENIMIENTO PROGRAMADO', margin, y);
+    y += 10;
+    
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'bold');
+    doc.text('ACTIVIDAD', margin, y);
+    doc.text('TIPO', margin + 90, y);
+    doc.text('FRECUENCIA', margin + 130, y);
+    doc.text('PRIORIDAD', margin + 160, y);
+    y += 2;
+    doc.line(margin, y, 190, y);
+    y += 7;
+    
+    doc.setFont('helvetica', 'normal');
+    asset.activities.forEach(act => {
+      if (y > 270) {
+        doc.addPage();
+        y = 20;
+      }
+      const desc = doc.splitTextToSize(act.description, 85);
+      doc.text(desc, margin, y);
+      doc.text(act.type === 'CALIBRATION' ? 'CALIB.' : 'MANTO.', margin + 90, y);
+      doc.text(`${act.frequencyWeeks} SEM.`, margin + 130, y);
+      doc.text(act.type === 'CALIBRATION' ? '-' : (act.priority || 'MEDIA'), margin + 160, y);
+      y += (desc.length * 5) + 2;
+    });
+    
+    // Footer
+    doc.setFontSize(8);
+    doc.setTextColor(150, 150, 150);
+    doc.text('Este documento es una hoja de vida técnica generada por el sistema CMMS Inteligente.', 105, 285, { align: 'center' });
+    
+    doc.save(`Hoja_de_Vida_${asset.name.replace(/\s+/g, '_')}.pdf`);
   };
 
   return (
@@ -242,7 +410,7 @@ export default function AssetsPage() {
             {editingId ? `Modificando ${formData.name}` : 'Registre y administre los equipos de la planta.'}
           </p>
         </div>
-        {editingId && (
+        {editingId ? (
           <button 
             onClick={resetForm}
             className="px-4 py-2 bg-slate-200 text-slate-700 font-bold rounded-lg hover:bg-slate-300 transition-all flex items-center gap-2"
@@ -250,6 +418,20 @@ export default function AssetsPage() {
             <X size={18} />
             CANCELAR EDICIÓN
           </button>
+        ) : (
+          isAdmin && (
+            <button 
+              onClick={() => {
+                resetForm();
+                // We'll use the form scroll to top instead of a modal here as the form is inline
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="px-4 py-2 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 transition-all flex items-center gap-2 shadow-lg shadow-blue-600/20"
+            >
+              <Plus size={18} />
+              NUEVO EQUIPO
+            </button>
+          )
         )}
       </div>
 
@@ -358,16 +540,45 @@ export default function AssetsPage() {
                          />
                       </div>
 
-                      <div className="space-y-2 text-left md:col-span-2">
-                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest block">N° Inventario Institucional</label>
-                         <input 
-                           type="text" 
-                           placeholder="Ej. INV-HOSP-001"
-                           className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-all outline-none font-medium text-slate-800"
-                           value={formData.institutionalInventoryNumber}
-                           onChange={(e) => setFormData({...formData, institutionalInventoryNumber: e.target.value})}
-                          />
+                      <div className="space-y-2 text-left">
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-widest block">Ubicación / Sede <span className="text-rose-500">*</span></label>
+                        <select 
+                          required
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-all outline-none font-medium text-slate-800"
+                          value={formData.locationId}
+                          onChange={(e) => setFormData({...formData, locationId: e.target.value})}
+                        >
+                          <option value="">Seleccionar Sede...</option>
+                          {locations.map(loc => (
+                            <option key={loc.id} value={loc.id}>{loc.name}</option>
+                          ))}
+                        </select>
                       </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-widest block">N° Inventario Institucional</label>
+                        <input 
+                          type="text" 
+                          placeholder="Ej. INV-HOSP-001"
+                          className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-all outline-none font-medium text-slate-800"
+                          value={formData.institutionalInventoryNumber}
+                          onChange={(e) => setFormData({...formData, institutionalInventoryNumber: e.target.value})}
+                         />
+                      </div>
+
+                      {!editingId && (
+                        <div className="space-y-2 text-left">
+                          <label className="text-xs font-bold text-slate-500 uppercase tracking-widest block">Cantidad de Activos</label>
+                          <input 
+                            type="number" 
+                            min="1"
+                            max="50"
+                            className="w-full px-4 py-2.5 bg-slate-100 border-2 border-blue-100 rounded-lg focus:ring-2 focus:ring-blue-600/20 focus:border-blue-600 transition-all outline-none font-black text-blue-600"
+                            value={quantity}
+                            onChange={(e) => setQuantity(Math.max(1, parseInt(e.target.value) || 1))}
+                          />
+                        </div>
+                      )}
 
                       <div className="space-y-2 md:col-span-2">
                         <label className="text-xs font-bold text-slate-500 uppercase tracking-widest block">Descripción</label>
@@ -507,7 +718,20 @@ export default function AssetsPage() {
                               </div>
 
                               <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
-                                <div className="w-full md:w-48 space-y-1">
+                                <div className="flex items-center gap-2 pr-4 border-r border-slate-200">
+                                  <input 
+                                    type="checkbox"
+                                    id={`is-cal-${activity.id}`}
+                                    checked={activity.type === 'CALIBRATION'}
+                                    onChange={(e) => updateActivity(activity.id, 'type', e.target.checked ? 'CALIBRATION' : 'MAINTENANCE')}
+                                    className="w-4 h-4 text-violet-600 rounded border-slate-300 focus:ring-violet-500"
+                                  />
+                                  <label htmlFor={`is-cal-${activity.id}`} className="text-[10px] font-black text-slate-500 uppercase tracking-widest cursor-pointer">
+                                    Calibración
+                                  </label>
+                                </div>
+
+                                <div className="w-full md:w-32 space-y-1">
                                   <div className="flex justify-between text-[10px] font-bold text-slate-400">
                                     <span>FRECUENCIA</span>
                                     <span className="text-blue-600 uppercase tracking-tighter">{activity.frequencyWeeks} SEMANAS</span>
@@ -522,16 +746,32 @@ export default function AssetsPage() {
                                   />
                                 </div>
 
+                                {activity.type !== 'CALIBRATION' && (
+                                  <div className="w-full md:w-32 space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Prioridad</label>
+                                    <select
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-bold uppercase transition-all outline-none"
+                                      value={activity.priority || 'MEDIA'}
+                                      onChange={(e) => updateActivity(activity.id, 'priority', e.target.value)}
+                                    >
+                                      <option value="ALTA">Alta</option>
+                                      <option value="MEDIA">Media</option>
+                                      <option value="BAJA">Baja</option>
+                                    </select>
+                                  </div>
+                                )}
+
                                 <div className="w-full md:w-32 space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Prioridad</label>
+                                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none block mb-1">Repuesto Req.</label>
                                   <select
-                                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-bold uppercase transition-all outline-none"
-                                    value={activity.priority || 'MEDIA'}
-                                    onChange={(e) => updateActivity(activity.id, 'priority', e.target.value)}
+                                    className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-[10px] font-bold uppercase transition-all outline-none cursor-pointer"
+                                    value={activity.requiredPartId || ''}
+                                    onChange={(e) => updateActivity(activity.id, 'requiredPartId', e.target.value)}
                                   >
-                                    <option value="ALTA">Alta</option>
-                                    <option value="MEDIA">Media</option>
-                                    <option value="BAJA">Baja</option>
+                                    <option value="">Ninguno</option>
+                                    {spareParts.map(sp => (
+                                      <option key={sp.id} value={sp.id}>{sp.name}</option>
+                                    ))}
                                   </select>
                                 </div>
 
@@ -586,20 +826,21 @@ export default function AssetsPage() {
                       <tr>
                         <th className="px-6 py-4">Equipo</th>
                         <th className="px-6 py-4">S/N</th>
+                        <th className="px-6 py-4">Sede</th>
                         <th className="px-6 py-4">Estado</th>
                         <th className="px-6 py-4">Tareas</th>
                         <th className="px-6 py-4">Acciones</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 font-medium">
-                      {assets.filter(a => (a.status || 'ACTIVE') !== 'ARCHIVED').length === 0 ? (
+                      {assets.filter(a => (a.status || 'ACTIVE') === 'ACTIVE').length === 0 ? (
                         <tr>
-                          <td colSpan={5} className="px-6 py-12 text-center text-slate-400 italic">
-                            No hay equipos registrados.
+                          <td colSpan={6} className="px-6 py-12 text-center text-slate-400 italic">
+                            No hay equipos activos registrados.
                           </td>
                         </tr>
                       ) : (
-                        assets.filter(a => (a.status || 'ACTIVE') !== 'ARCHIVED').map((asset) => (
+                        assets.filter(a => (a.status || 'ACTIVE') === 'ACTIVE').map((asset) => (
                           <tr 
                             key={asset.id} 
                             onClick={() => setSelectedAsset(asset)}
@@ -623,6 +864,14 @@ export default function AssetsPage() {
                             </td>
                             <td className="px-6 py-4 text-xs font-mono text-slate-500 text-center">{asset.serialNumber}</td>
                             <td className="px-6 py-4 text-center">
+                               <div className="flex items-center justify-center gap-1.5">
+                                 <MapPin size={12} className="text-slate-400" />
+                                 <span className="text-[10px] font-bold text-slate-600 uppercase">
+                                   {locations.find(l => l.id === asset.locationId)?.place || 'S/A'}
+                                 </span>
+                               </div>
+                             </td>
+                            <td className="px-6 py-4 text-center">
                               <span className={cn(
                                 "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter",
                                 (asset.status || 'ACTIVE') === 'ACTIVE' ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"
@@ -636,26 +885,46 @@ export default function AssetsPage() {
                               </span>
                             </td>
                             <td className="px-6 py-4 text-center">
-                              {isAdmin ? (
-                                <div className="flex items-center justify-center gap-1">
-                                  <button 
-                                    onClick={(e) => editAsset(asset, e)}
-                                    className="p-2 text-slate-400 hover:text-blue-600 transition-colors cursor-pointer"
-                                    title="Editar"
-                                  >
-                                    <Edit2 size={16} />
-                                  </button>
-                                  <button 
-                                    onClick={(e) => archiveAsset(asset.id, e)}
-                                    className="p-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
-                                    title="Dar de baja"
-                                  >
-                                    <Archive size={16} />
-                                  </button>
-                                </div>
-                              ) : (
-                                <span className="text-[10px] font-bold text-slate-400 uppercase">Solo Lectura</span>
-                              )}
+                              <div className="flex items-center justify-center gap-1">
+                                <button 
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    downloadAssetResume(asset);
+                                  }}
+                                  className="p-2 text-slate-400 hover:text-emerald-600 transition-colors cursor-pointer"
+                                  title="Descargar Hoja de Vida"
+                                >
+                                  <FileSpreadsheet size={16} />
+                                </button>
+                                {isAdmin && (
+                                  <>
+                                    <button 
+                                      onClick={(e) => editAsset(asset, e)}
+                                      className="p-2 text-slate-400 hover:text-blue-600 transition-colors cursor-pointer"
+                                      title="Editar"
+                                    >
+                                      <Edit2 size={16} />
+                                    </button>
+                                    <button 
+                                      onClick={(e) => archiveAsset(asset.id, e)}
+                                      className="p-2 text-slate-400 hover:text-amber-600 transition-colors cursor-pointer"
+                                      title="Dar de baja"
+                                    >
+                                      <Archive size={16} />
+                                    </button>
+                                    <button 
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDeleteConfirmId(asset.id);
+                                      }}
+                                      className="p-2 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer"
+                                      title="Eliminar permanentemente"
+                                    >
+                                      <Trash2 size={16} />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </td>
                           </tr>
                         ))
@@ -936,7 +1205,104 @@ export default function AssetsPage() {
                   )}
                 >
                   <FileDown size={18} />
-                  DESCARGAR MANUAL
+                  MANUAL
+                </button>
+                <button 
+                  onClick={() => downloadAssetResume(selectedAsset)}
+                  className="flex-1 py-3 bg-emerald-600 text-white font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-600/20"
+                >
+                  <FileSpreadsheet size={18} />
+                  HOJA DE VIDA
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {archiveConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setArchiveConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-amber-100 flex items-center justify-center text-amber-600 shrink-0">
+                  <Archive size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Dar de Baja Equipo</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de dar de baja este equipo? Se moverá al módulo de Archivo y no se programarán nuevas tareas.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setArchiveConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmArchive}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-amber-600 hover:bg-amber-700 shadow-lg shadow-amber-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Dar de Baja
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                  <Trash2 size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Confirmar Eliminación</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de que desea eliminar este equipo permanentemente del sistema? Esta acción borrará todos sus datos y no se puede deshacer.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Eliminar Equipo
                 </button>
               </div>
             </motion.div>

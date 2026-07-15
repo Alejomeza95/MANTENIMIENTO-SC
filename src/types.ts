@@ -1,12 +1,25 @@
 export interface User {
   id: string;
   username: string;
+  password?: string;
+  email: string;
   name?: string;
   firstName?: string;
   lastName?: string;
   role: 'ADMIN' | 'TECHNICIAN';
   area?: string;
   status: 'ACTIVE' | 'INACTIVE';
+  locationId?: string;
+  photoUrl?: string;
+}
+
+export interface Location {
+  id: string;
+  department: string;
+  city: string;
+  place: string;
+  name: string;
+  createdAt: string;
 }
 
 export interface AuthState {
@@ -15,6 +28,9 @@ export interface AuthState {
   isAuthenticated: boolean;
   login: (user: User, token: string) => void;
   logout: () => void;
+  updateUser: (updatedFields: Partial<User>) => void;
+  darkMode: boolean;
+  setDarkMode: (dark: boolean) => void;
 }
 
 export interface MaintenanceStats {
@@ -29,8 +45,10 @@ export interface WorkOrder {
   orderNumber: string; // Sequential 00001
   assetId: string;
   assetName: string;
+  locationId?: string;
   priority: 'ALTA' | 'MEDIA' | 'BAJA';
   status: 'PENDIENTE' | 'EN_PROGRESO' | 'COMPLETADA';
+  type: 'MAINTENANCE' | 'CALIBRATION';
   tasks: {
     description: string;
     status: 'COMPLETADA' | 'INCOMPLETA' | 'NO_REALIZADA' | 'PENDIENTE';
@@ -45,16 +63,36 @@ export interface WorkOrder {
   cost?: number;
   weekNumber: number;
   year: number;
+  validated?: boolean;
+  usedParts?: {
+    partId: string;
+    partName: string;
+    quantity: number;
+    fullyUsed: boolean;
+  }[];
   createdAt: string;
 }
 
-export type ViewType = 'dashboard' | 'assets' | 'orders' | 'technicians' | 'archive' | 'schedule' | 'settings';
+export type ViewType = 'dashboard' | 'assets' | 'orders' | 'technicians' | 'archive' | 'schedule' | 'settings' | 'locations' | 'spare-parts';
+
+export interface SparePart {
+  id: string;
+  name: string;
+  supplier: string;
+  unitCost: number;
+  stock: number;
+  minStock: number;
+  createdAt: string;
+  updatedAt?: string;
+}
 
 export interface MaintenanceActivity {
   id: string;
   description: string;
   frequencyWeeks: number;
   priority?: 'ALTA' | 'MEDIA' | 'BAJA';
+  type: 'MAINTENANCE' | 'CALIBRATION';
+  requiredPartId?: string;
 }
 
 export interface Asset {
@@ -67,6 +105,7 @@ export interface Asset {
   activities: MaintenanceActivity[];
   imageUrl?: string;
   manualUrl?: string;
+  locationId?: string;
   status: 'ACTIVE' | 'INACTIVE' | 'ARCHIVED';
   brand?: string;
   model?: string;

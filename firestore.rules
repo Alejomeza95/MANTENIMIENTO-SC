@@ -1,82 +1,8 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // -------------------------------------------------------------------------
-    // GLOBALS & HELPERS
-    // -------------------------------------------------------------------------
-    
-    function isSignedIn() { return request.auth != null; }
-    function isEmailVerified() { return request.auth.token.email_verified == true; }
-    function getUserData() { 
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
-    }
-    function isAdmin() { 
-      return isSignedIn() && getUserData().role == 'ADMIN';
-    }
-    function isTechnician() {
-      return isSignedIn() && getUserData().role == 'TECHNICIAN';
-    }
-    function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
-
-    // -------------------------------------------------------------------------
-    // ENTITY VALIDATORS
-    // -------------------------------------------------------------------------
-
-    function isValidUser(data) {
-      return data.role in ['ADMIN', 'TECHNICIAN'] &&
-             data.status in ['ACTIVE', 'INACTIVE'] &&
-             data.name is string && data.name.size() < 100;
-    }
-
-    function isValidAsset(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
-             data.status in ['ACTIVE', 'INACTIVE', 'ARCHIVED'];
-    }
-
-    function isValidWorkOrder(data) {
-      return data.orderNumber is string && data.orderNumber.size() > 0 &&
-             data.assetId is string &&
-             data.status in ['PENDIENTE', 'EN_PROGRESO', 'COMPLETADA'] &&
-             data.priority in ['ALTA', 'MEDIA', 'BAJA'] &&
-             data.assignedTechnicians is list;
-    }
-
-    // Default deny
     match /{document=**} {
-      allow read, write: if false;
-    }
-
-    // -------------------------------------------------------------------------
-    // COLLECTIONS
-    // -------------------------------------------------------------------------
-
-    match /users/{userId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
-      allow update: if isSignedIn() && (
-        (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'area'])) ||
-        isAdmin()
-      ) && isValidUser(incoming());
-    }
-
-    match /assets/{assetId} {
-      allow read: if isSignedIn();
-      allow create, update: if isAdmin() && isValidAsset(incoming());
-      allow delete: if isAdmin();
-    }
-
-    match /orders/{orderId} {
-      allow read: if isSignedIn();
-      allow create: if isAdmin() && isValidWorkOrder(incoming());
-      allow update: if (
-        isAdmin() || 
-        (isTechnician() && 
-         request.auth.uid in existing().assignedTechnicians && 
-         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'tasks', 'endTime', 'cost']))
-      ) && isValidWorkOrder(incoming());
-      allow delete: if isAdmin();
+      allow read, write: if true;
     }
   }
 }

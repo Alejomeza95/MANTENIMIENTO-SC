@@ -8,12 +8,22 @@ import ArchivePage from './features/assets/ArchivePage';
 import TechniciansPage from './features/admin/TechniciansPage';
 import WorkOrdersPage from './features/orders/WorkOrdersPage';
 import MaintenanceSchedule from './features/assets/MaintenanceSchedule';
+import LocationsPage from './features/admin/LocationsPage';
+import SparePartsPage from './features/inventory/SparePartsPage';
 import { ViewType } from './types';
 import { useEffect } from 'react';
 
 export default function App() {
-  const { user, isAuthenticated } = useAuthStore();
+  const { user, isAuthenticated, darkMode } = useAuthStore();
   const [currentView, setCurrentView] = useState<ViewType>('dashboard');
+
+  useEffect(() => {
+    if (darkMode) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }, [darkMode]);
 
   useEffect(() => {
     if (isAuthenticated && user?.role === 'TECHNICIAN' && currentView === 'dashboard') {
@@ -39,6 +49,10 @@ export default function App() {
         return <MaintenanceSchedule />;
       case 'technicians':
         return <TechniciansPage />;
+      case 'locations':
+        return <LocationsPage />;
+      case 'spare-parts':
+        return <SparePartsPage />;
       default:
         return (
           <div className="flex flex-col items-center justify-center py-20 text-center">

@@ -1,71 +1,47 @@
-import { 
-  collection, 
-  onSnapshot, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  query, 
-  where, 
-  orderBy, 
-  DocumentData,
-  QueryConstraint
-} from 'firebase/firestore';
-import { db } from './firebase';
-import { handleFirestoreError, OperationType } from './firebaseErrors';
 import { useEffect, useState } from 'react';
+import { db } from './firebase';
+import { collection, onSnapshot, doc, setDoc, updateDoc, deleteDoc, getDocs, addDoc } from 'firebase/firestore';
 
-export function useFirestoreCollection<T>(collectionPath: string, constraints: QueryConstraint[] = []) {
+export function useFirestoreCollection<T>(collectionPath: string, _constraints: any[] = []) {
   const [data, setData] = useState<T[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
-    const q = query(collection(db, collectionPath), ...constraints);
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const docs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as T[];
+    const colRef = collection(db, collectionPath);
+    const unsubscribe = onSnapshot(colRef, (snapshot) => {
+      const docs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as T));
       setData(docs);
       setLoading(false);
     }, (err) => {
-      handleFirestoreError(err, OperationType.LIST, collectionPath);
+      console.error('Error in useFirestoreCollection:', err);
       setError(err.message);
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [collectionPath, JSON.stringify(constraints)]);
+  }, [collectionPath]);
 
   return { data, loading, error };
 }
 
 export async function addFirestoreDoc(collectionPath: string, data: any) {
-  try {
-    const docRef = await addDoc(collection(db, collectionPath), data);
-    return docRef.id;
-  } catch (err) {
-    handleFirestoreError(err, OperationType.CREATE, collectionPath);
-  }
+  const colRef = collection(db, collectionPath);
+  const newDoc = { 
+    ...data, 
+    createdAt: new Date().toISOString()
+  };
+  const docRef = await addDoc(colRef, newDoc);
+  return docRef.id;
 }
 
 export async function updateFirestoreDoc(collectionPath: string, docId: string, data: any) {
-  try {
-    const docRef = doc(db, collectionPath, docId);
-    await updateDoc(docRef, data);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.UPDATE, `${collectionPath}/${docId}`);
-  }
+  const docRef = doc(db, collectionPath, docId);
+  await updateDoc(docRef, { ...data, updatedAt: new Date().toISOString() });
 }
 
 export async function deleteFirestoreDoc(collectionPath: string, docId: string) {
-  try {
-    const docRef = doc(db, collectionPath, docId);
-    await deleteDoc(docRef);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `${collectionPath}/${docId}`);
-  }
+  const docRef = doc(db, collectionPath, docId);
+  await deleteDoc(docRef);
 }
+

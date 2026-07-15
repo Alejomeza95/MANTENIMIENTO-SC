@@ -8,31 +8,58 @@ import {
   Search,
   X,
   Wrench,
-  Loader2
+  Loader2,
+  Trash2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { Asset } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { useFirestoreCollection, updateFirestoreDoc } from '../../lib/firestoreHooks';
+import { useFirestoreCollection, updateFirestoreDoc, deleteFirestoreDoc } from '../../lib/firestoreHooks';
+import { useAuthStore } from '../../store/useAuthStore';
 
 export default function ArchivePage() {
+  const { user } = useAuthStore();
+  const isAdmin = user?.role === 'ADMIN';
+
   const { data: allAssets, loading } = useFirestoreCollection<Asset>('assets');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  
+  const [reactivateConfirmId, setReactivateConfirmId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
 
   const assets = useMemo(() => 
-    allAssets.filter(a => (a.status || 'ACTIVE') === 'ARCHIVED'), 
+    allAssets.filter(a => (a.status || 'ACTIVE') === 'ARCHIVED' || (a.status || 'ACTIVE') === 'INACTIVE'), 
   [allAssets]);
 
-  const reactivateAsset = async (id: string, e: React.MouseEvent) => {
+  const reactivateAsset = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (confirm('¿Desea reactivar este equipo y devolverlo a la lista de activos en operación?')) {
-      try {
-        await updateFirestoreDoc('assets', id, { status: 'ACTIVE' });
-        if (selectedAsset?.id === id) setSelectedAsset(null);
-      } catch (err) {
-        console.error(err);
-      }
+    setReactivateConfirmId(id);
+  };
+
+  const confirmReactivate = async () => {
+    if (!reactivateConfirmId) return;
+    try {
+      await updateFirestoreDoc('assets', reactivateConfirmId, { status: 'ACTIVE' });
+      if (selectedAsset?.id === reactivateConfirmId) setSelectedAsset(null);
+    } catch (err) {
+      console.error(err);
+      alert('Error al reactivar el equipo');
+    } finally {
+      setReactivateConfirmId(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmId) return;
+    try {
+      await deleteFirestoreDoc('assets', deleteConfirmId);
+      if (selectedAsset?.id === deleteConfirmId) setSelectedAsset(null);
+    } catch (err) {
+      console.error(err);
+      alert('Error al eliminar el equipo');
+    } finally {
+      setDeleteConfirmId(null);
     }
   };
 
@@ -128,25 +155,42 @@ export default function ArchivePage() {
                     </td>
                     <td className="px-6 py-4 text-xs font-mono text-slate-400 text-center">{asset.serialNumber}</td>
                     <td className="px-6 py-4 text-center">
-                      <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter bg-rose-50 text-rose-600">
-                        DADO DE BAJA
+                      <span className={cn(
+                        "px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tighter",
+                        asset.status === 'ARCHIVED' ? "bg-rose-50 text-rose-600" : "bg-amber-50 text-amber-600"
+                      )}>
+                        {asset.status === 'ARCHIVED' ? 'DADO DE BAJA' : 'INACTIVO'}
                       </span>
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <div className="flex items-center justify-center gap-1">
+                      <div className="flex items-center justify-center gap-2">
                         <button 
+                          onClick={(e) => reactivateAsset(asset.id, e)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 text-emerald-600 hover:bg-emerald-600 hover:text-white rounded-lg transition-all text-[10px] font-black uppercase tracking-widest border border-emerald-200/50"
+                          title="Activar Equipo"
+                        >
+                          <RotateCcw size={14} />
+                          Activar
+                        </button>
+                        <button 
+                          onClick={() => setSelectedAsset(asset)}
                           className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
                           title="Ver Detalle"
                         >
                           <Eye size={18} />
                         </button>
-                        <button 
-                          onClick={(e) => reactivateAsset(asset.id, e)}
-                          className="p-2 text-slate-400 hover:text-emerald-600 transition-colors"
-                          title="Reactivar Equipo"
-                        >
-                          <RotateCcw size={18} />
-                        </button>
+                        {isAdmin && (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteConfirmId(asset.id);
+                            }}
+                            className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
+                            title="Eliminar Permanentemente"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -264,6 +308,96 @@ export default function ArchivePage() {
                 >
                   <FileDown size={18} />
                   HISTORIAL
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {reactivateConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setReactivateConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-600 shrink-0">
+                  <RotateCcw size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Reactivar Equipo</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Desea reactivar este equipo y devolverlo a la lista de activos en operación?
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setReactivateConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmReactivate}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Reactivar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                  <Trash2 size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Confirmar Eliminación</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de que desea eliminar este equipo permanentemente del sistema? Esta acción borrará todos sus datos y no se puede deshacer.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Eliminar Equipo
                 </button>
               </div>
             </motion.div>

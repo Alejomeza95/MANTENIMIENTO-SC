@@ -14,13 +14,22 @@ import {
   X,
   Filter,
   CheckSquare,
-  Loader2
+  Loader2,
+  Edit2,
+  Trash2,
+  MapPin
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
-import { WorkOrder, Asset, Technician } from '../../types';
+import { WorkOrder, Asset, Technician, Location, SparePart } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { 
+  Package,
+  Layers,
+  TrendingDown,
+  ChevronDown,
+} from 'lucide-react';
 
 import { useAuthStore } from '../../store/useAuthStore';
 import { useFirestoreCollection, addFirestoreDoc, updateFirestoreDoc } from '../../lib/firestoreHooks';
@@ -31,12 +40,16 @@ export default function WorkOrdersPage() {
   const { data: orders, loading: loadingOrders } = useFirestoreCollection<WorkOrder>('orders');
   const { data: assets, loading: loadingAssets } = useFirestoreCollection<Asset>('assets');
   const { data: technicians, loading: loadingTechs } = useFirestoreCollection<Technician>('users');
+  const { data: locations } = useFirestoreCollection<Location>('locations');
+  const { data: spareParts } = useFirestoreCollection<SparePart>('spare_parts');
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedWeek, setSelectedWeek] = useState(new Date().toISOString().split('T')[0]); // Use as reference for week
   const [filterType, setFilterType] = useState<'ALL' | 'WEEK'>('ALL');
   const [taskScope, setTaskScope] = useState<'ALL' | 'MINE'>('ALL');
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [saveManagementConfirmOrder, setSaveManagementConfirmOrder] = useState<WorkOrder | null>(null);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -49,17 +62,27 @@ export default function WorkOrdersPage() {
     date: new Date().toISOString().split('T')[0],
     assignedTechnicians: [] as string[],
     status: 'PENDIENTE' as 'PENDIENTE' | 'EN_PROGRESO' | 'COMPLETADA',
-    extractTasks: true
+    type: 'MAINTENANCE' as 'MAINTENANCE' | 'CALIBRATION',
+    validated: false,
+    extractTasks: true,
+    usedParts: [] as { partId: string, partName: string, quantity: number, fullyUsed: boolean }[]
   });
 
-  const activeAssets = useMemo(() => assets.filter(a => a.status !== 'ARCHIVED'), [assets]);
+  const activeAssets = useMemo(() => assets.filter(a => (a.status || 'ACTIVE') === 'ACTIVE'), [assets]);
   const activeTechs = useMemo(() => technicians.filter(t => t.status === 'ACTIVE' || t.role === 'TECHNICIAN'), [technicians]);
 
   const getWeekNumber = (d: Date) => {
-    const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
-    date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
-    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-    return Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+    const year = d.getFullYear();
+    const firstDayOfYear = new Date(year, 0, 1);
+    const firstSunday = new Date(firstDayOfYear);
+    while (firstSunday.getDay() !== 0) {
+      firstSunday.setDate(firstSunday.getDate() + 1);
+    }
+    
+    const diff = d.getTime() - firstSunday.getTime();
+    if (diff < 0) return 1;
+    
+    return Math.min(Math.max(Math.floor(diff / (1000 * 60 * 60 * 24 * 7)) + 1, 1), 52);
   };
 
   const currentWeekNumber = useMemo(() => getWeekNumber(new Date(formData.date)), [formData.date]);
@@ -69,12 +92,26 @@ export default function WorkOrdersPage() {
     const asset = assets.find(a => a.id === formData.assetId);
     if (!asset) return [];
     
+    let acts = asset.activities;
+    
+    // Filtrar por tipo seleccionado
+    acts = acts.filter(act => (act.type || 'MAINTENANCE') === formData.type);
+
     if (formData.extractTasks && !editingId) {
       // Filter activities that correspond to this week only for new orders
-      return asset.activities.filter(act => currentWeekNumber % act.frequencyWeeks === 0);
+      return acts.filter(act => currentWeekNumber % act.frequencyWeeks === 0);
     }
-    return asset.activities;
-  }, [formData.assetId, formData.extractTasks, currentWeekNumber, assets, editingId]);
+    return acts;
+  }, [formData.assetId, formData.extractTasks, currentWeekNumber, assets, editingId, formData.type]);
+
+  const selectedAssetLocationId = useMemo(() => {
+    return assets.find(a => a.id === formData.assetId)?.locationId;
+  }, [assets, formData.assetId]);
+
+  const techniciansInLocation = useMemo(() => {
+    if (!selectedAssetLocationId) return activeTechs;
+    return activeTechs.filter(t => t.locationId === selectedAssetLocationId);
+  }, [activeTechs, selectedAssetLocationId]);
 
   // Auto-set priority based on filtered tasks
   useEffect(() => {
@@ -106,10 +143,13 @@ export default function WorkOrdersPage() {
         await updateFirestoreDoc('orders', editingId, {
           priority: formData.priority, 
           status: formData.status, 
+          type: formData.type,
+          validated: formData.validated,
           assignedTechnicians: formData.assignedTechnicians,
           date: formData.date,
           weekNumber: currentWeekNumber,
-          updatedAt: new Date().toISOString()
+          updatedAt: new Date().toISOString(),
+          usedParts: formData.usedParts
         });
         setNotification('¡Orden de trabajo actualizada correctamente!');
       } else {
@@ -136,8 +176,11 @@ export default function WorkOrdersPage() {
           orderNumber,
           assetId: asset.id,
           assetName: asset.name,
+          locationId: asset.locationId || null,
           priority: formData.priority,
           status: formData.status,
+          type: formData.type,
+          validated: formData.validated,
           tasks: tasksToAssign,
           assignedTechnicians: formData.assignedTechnicians,
           date: formData.date,
@@ -147,8 +190,21 @@ export default function WorkOrdersPage() {
           weekNumber: currentWeekNumber,
           year: new Date(formData.date).getFullYear(),
           createdAt: new Date().toISOString(),
-          maintenanceCost: 0
+          maintenanceCost: 0,
+          usedParts: formData.usedParts
         };
+
+        // Update stock for parts assigned during creation (assuming they are "reserved" or consumed-at-creation)
+        // User said: "y que si se van utilizando se vaya actualizando el stock"
+        // Let's deduct from stock immediately if assigned at creation.
+        for (const part of formData.usedParts) {
+          const sp = spareParts.find(p => p.id === part.partId);
+          if (sp) {
+             await updateFirestoreDoc('spare_parts', sp.id, { 
+               stock: Math.max(0, sp.stock - part.quantity) 
+             });
+          }
+        }
 
         await addFirestoreDoc('orders', newOrder);
         setSelectedWeek(formData.date); // Update filter to show the new order immediately
@@ -178,7 +234,10 @@ export default function WorkOrdersPage() {
       date: order.date,
       assignedTechnicians: order.assignedTechnicians,
       status: order.status,
-      extractTasks: false
+      type: order.type || 'MAINTENANCE',
+      validated: order.validated || false,
+      extractTasks: false,
+      usedParts: order.usedParts || []
     });
     setIsModalOpen(true);
   };
@@ -190,7 +249,10 @@ export default function WorkOrdersPage() {
       date: new Date().toISOString().split('T')[0],
       assignedTechnicians: [],
       status: 'PENDIENTE',
-      extractTasks: true
+      type: 'MAINTENANCE',
+      validated: false,
+      extractTasks: true,
+      usedParts: []
     });
     setEditingId(null);
   };
@@ -253,7 +315,7 @@ export default function WorkOrdersPage() {
     }
   };
 
-  const handleSaveManagement = async (order: WorkOrder) => {
+  const handleSaveManagement = (order: WorkOrder) => {
     // Validation
     const allNotesPresent = order.tasks.every(t => 
       t.status === 'COMPLETADA' || (t.note && t.note.length > 5)
@@ -269,14 +331,20 @@ export default function WorkOrdersPage() {
       return;
     }
 
-    if (window.confirm('¿Está seguro de que desea guardar la gestión de esta orden?')) {
-      try {
-        await updateFirestoreDoc('orders', order.id, { status: 'EN_PROGRESO' });
-        setNotification('¡Gestión de la orden guardada correctamente!');
-        setTimeout(() => setNotification(null), 3000);
-      } catch (err) {
-        console.error(err);
-      }
+    setSaveManagementConfirmOrder(order);
+  };
+
+  const confirmSaveManagement = async () => {
+    if (!saveManagementConfirmOrder) return;
+    try {
+      await updateFirestoreDoc('orders', saveManagementConfirmOrder.id, { status: 'EN_PROGRESO' });
+      setNotification('¡Gestión de la orden guardada correctamente!');
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert('Error al guardar la gestión de la orden');
+    } finally {
+      setSaveManagementConfirmOrder(null);
     }
   };
 
@@ -304,11 +372,11 @@ export default function WorkOrdersPage() {
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(24);
     doc.setFont('helvetica', 'bold');
-    doc.text('ORDEN DE TRABAJO', margin, 28);
+    doc.text(order.type === 'CALIBRATION' ? 'ORDEN DE CALIBRACIÓN' : 'ORDEN DE TRABAJO', margin, 28);
     
     doc.setFontSize(10);
     doc.setFont('helvetica', 'normal');
-    doc.text('MANTENIMIENTO PREVENTIVO INDUSTRIAL', margin, 36);
+    doc.text(order.type === 'CALIBRATION' ? 'PROTOCOLOS DE CALIBRACIÓN Y METROLOGÍA' : 'MANTENIMIENTO PREVENTIVO INDUSTRIAL', margin, 36);
     
     doc.setFontSize(14);
     doc.setFont('courier', 'bold');
@@ -354,10 +422,33 @@ export default function WorkOrdersPage() {
     doc.setFont('helvetica', 'bold');
     doc.text(`$${Math.round(order.maintenanceCost || 0).toLocaleString()}`, 160, 88);
 
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Tipo OT:`, margin, 96);
+    doc.setFont('helvetica', 'bold');
+    doc.text(order.type === 'CALIBRATION' ? 'CALIBRACIÓN' : 'MANTENIMIENTO', margin + 40, 96);
+
+    doc.setFont('helvetica', 'normal');
+    doc.text(`Validada:`, 120, 96);
+    doc.setFont('helvetica', 'bold');
+    if (order.validated) {
+      doc.setTextColor(22, 163, 74);
+      doc.text('SÍ (VALIDA)', 140, 96);
+    } else {
+      doc.setTextColor(220, 38, 38);
+      doc.text('NO (PENDIENTE)', 140, 96);
+    }
+    doc.setTextColor(30, 41, 59);
+
+    if (asset?.imageUrl) {
+      try {
+        doc.addImage(asset.imageUrl, 'JPEG', 160, 48, 30, 30);
+      } catch (e) {}
+    }
+
     // Technicians Section
     doc.setFontSize(12);
-    doc.text('2. PERSONAL ASIGNADO', margin, 105);
-    doc.line(margin, 107, 190, 107);
+    doc.text('2. PERSONAL ASIGNADO', margin, 110);
+    doc.line(margin, 112, 190, 112);
     
     const names = technicians
       .filter(t => order.assignedTechnicians.includes(t.id))
@@ -368,12 +459,35 @@ export default function WorkOrdersPage() {
     doc.setFont('helvetica', 'normal');
     doc.text(names, margin, 115);
 
+    // Spare Parts Section (PDF)
+    let yPos = 130;
+    if (order.usedParts && order.usedParts.length > 0) {
+      doc.setFontSize(12);
+      doc.setFont('helvetica', 'bold');
+      doc.text('3. REPUESTOS Y MATERIALES', margin, 130);
+      doc.line(margin, 132, 190, 132);
+      
+      autoTable(doc, {
+        startY: 135,
+        head: [['REPUESTO', 'CANTIDAD', 'ESTADO DE USO']],
+        body: order.usedParts.map(up => [
+          up.partName,
+          up.quantity,
+          up.fullyUsed ? 'USO TOTAL' : 'USO PARCIAL'
+        ]),
+        theme: 'grid',
+        headStyles: { fillColor: [51, 65, 85] },
+        styles: { fontSize: 9 }
+      });
+      yPos = (doc as any).lastAutoTable.finalY + 15;
+    }
+
     // Tasks Table
     doc.setFontSize(12);
     doc.setFont('helvetica', 'bold');
-    doc.text('3. PROTOCOLO DE ACTIVIDADES', margin, 130);
+    doc.text(order.usedParts && order.usedParts.length > 0 ? '4. PROTOCOLO DE ACTIVIDADES' : '3. PROTOCOLO DE ACTIVIDADES', margin, yPos);
     autoTable(doc, {
-      startY: 135,
+      startY: yPos + 5,
       head: [['#', 'DESCRIPCIÓN DE LA ACTIVIDAD', 'ESTADO', 'NOTAS']],
       body: order.tasks.map((t, i) => [
         i + 1, 
@@ -407,6 +521,13 @@ export default function WorkOrdersPage() {
     doc.setFont('helvetica', 'normal');
     const finalTableY = (doc as any).lastAutoTable.finalY || 135;
     doc.text(`Técnico(s) Asignado(s): ${assignedNames}`, margin, finalTableY + 15);
+
+    if (order.validated) {
+      doc.setFontSize(8);
+      doc.setTextColor(22, 163, 74);
+      doc.setFont('helvetica', 'bold');
+      doc.text('ESTA ORDEN HA SIDO VALIDADA POR LA ADMINISTRACIÓN', 105, finalTableY + 25, { align: 'center' });
+    }
 
     doc.save(`OT_${order.orderNumber}_${order.assetName.replace(/\s+/g, '_')}.pdf`);
   };
@@ -451,6 +572,32 @@ export default function WorkOrdersPage() {
       </div>
     );
   }
+
+  const deleteOrder = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setDeleteConfirmId(id);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmId) return;
+    try {
+      await updateFirestoreDoc('orders', deleteConfirmId, { status: 'ARCHIVED' });
+      setNotification('Orden de trabajo eliminada (archivada).');
+      setTimeout(() => setNotification(null), 3000);
+    } catch (err) {
+      console.error(err);
+      alert('Error al eliminar la orden de trabajo');
+    } finally {
+      setDeleteConfirmId(null);
+    }
+  };
+
+  const isAdmin = user?.role === 'ADMIN';
+
+  const canEdit = (order: WorkOrder) => {
+    if (isAdmin) return true;
+    return order.assignedTechnicians.includes(user?.id || '');
+  };
 
   return (
     <div className="space-y-8 pb-20 text-left relative">
@@ -558,6 +705,7 @@ export default function WorkOrdersPage() {
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-16">OT #</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Equipo</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Ubicación</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Programación</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center">Estado</th>
                 {user?.role === 'ADMIN' && (
@@ -601,13 +749,29 @@ export default function WorkOrdersPage() {
                           </td>
                           <td className="px-6 py-5">
                             <div className="flex flex-col">
-                              <span className="text-sm font-bold text-slate-900">{order.assetName}</span>
+                              <div className="flex items-center gap-2">
+                                <span className={cn(
+                                  "text-[9px] font-black px-1.5 py-0.5 rounded uppercase tracking-tighter",
+                                  order.type === 'CALIBRATION' ? "bg-violet-600 text-white" : "bg-slate-200 text-slate-600"
+                                )}>
+                                  {order.type === 'CALIBRATION' ? 'CALIBRACIÓN' : 'MANTO'}
+                                </span>
+                                <span className="text-sm font-bold text-slate-900">{order.assetName}</span>
+                              </div>
                               <span className={cn(
                                 "text-[9px] font-bold uppercase tracking-widest mt-0.5",
                                 order.priority === 'ALTA' ? "text-rose-600" :
                                 order.priority === 'MEDIA' ? "text-amber-600" : "text-blue-600"
                               )}>
                                 {order.priority} PRIORIDAD
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-5">
+                            <div className="flex items-center gap-1.5">
+                              <MapPin size={12} className="text-slate-400" />
+                              <span className="text-xs font-bold text-slate-600">
+                                {locations.find(l => l.id === order.locationId)?.place || 'S/A'}
                               </span>
                             </div>
                           </td>
@@ -629,15 +793,20 @@ export default function WorkOrdersPage() {
                           {user?.role === 'ADMIN' && (
                             <td className="px-6 py-5 text-center" onClick={(e) => e.stopPropagation()}>
                               <button
-                                onClick={() => {
-                                  const newStatus = order.status === 'COMPLETADA' ? 'EN_PROGRESO' : 'COMPLETADA';
-                                  handleCloseOrder(order.id);
+                                onClick={async () => {
+                                  try {
+                                    await updateFirestoreDoc('orders', order.id, { validated: !order.validated });
+                                    setNotification(order.validated ? 'Validación removida' : '¡Orden validada correctamente!');
+                                    setTimeout(() => setNotification(null), 3000);
+                                  } catch (err) {
+                                    console.error(err);
+                                  }
                                 }}
                                 className={cn(
-                                  "w-8 h-8 rounded-lg flex items-center justify-center transition-all border",
-                                  order.status === 'COMPLETADA' 
+                                  "w-8 h-8 rounded-lg flex items-center justify-center transition-all border shadow-sm",
+                                  order.validated 
                                     ? "bg-emerald-600 border-emerald-600 text-white" 
-                                    : "bg-white border-slate-200 text-slate-300 hover:text-amber-600 hover:border-amber-200"
+                                    : "bg-white border-slate-200 text-slate-300 hover:text-emerald-600 hover:border-emerald-200"
                                 )}
                               >
                                 <CheckSquare size={16} />
@@ -649,14 +818,34 @@ export default function WorkOrdersPage() {
                               ${Math.round(order.maintenanceCost || 0).toLocaleString()}
                             </span>
                           </td>
-                          <td className="px-6 py-5 text-right">
-                            <ChevronRight 
-                              size={18} 
-                              className={cn(
-                                "text-slate-300 transition-transform duration-300",
-                                isExpanded ? "rotate-90 text-blue-600" : "group-hover:text-slate-500"
-                              )} 
-                            />
+                          <td className="px-6 py-5 text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end gap-1">
+                              <button 
+                                onClick={() => exportPDF(order)}
+                                className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
+                                title="Exportar PDF"
+                              >
+                                <FileDown size={18} />
+                              </button>
+                              {canEdit(order) && (
+                                <button 
+                                  onClick={() => handleEdit(order)}
+                                  className="p-2 text-slate-400 hover:text-amber-600 transition-colors"
+                                  title="Editar / Gestionar"
+                                >
+                                  <Edit2 size={18} />
+                                </button>
+                              )}
+                              {isAdmin && (
+                                <button 
+                                  onClick={(e) => deleteOrder(order.id, e)}
+                                  className="p-2 text-slate-400 hover:text-rose-600 transition-colors"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 size={18} />
+                                </button>
+                              )}
+                            </div>
                           </td>
                     </motion.tr>
 
@@ -672,9 +861,9 @@ export default function WorkOrdersPage() {
                               className="overflow-hidden"
                             >
                               <div className="p-8 grid grid-cols-1 md:grid-cols-3 gap-12">
-                                <div className="md:col-span-2 space-y-8 text-left">
-                                  <div className="flex items-center justify-between">
-                                    <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Gestión de Tareas</h4>
+                              <div className="md:col-span-2 space-y-8 text-left">
+                                <div className="flex items-center justify-between">
+                                  <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Gestión de Tareas</h4>
                                     <div className="flex items-center gap-6">
                                       <div className="flex items-center gap-3">
                                         <span className="text-[10px] font-bold text-slate-400 uppercase">Inicio:</span>
@@ -748,6 +937,117 @@ export default function WorkOrdersPage() {
                                         )}
                                       </div>
                                     ))}
+                                  </div>
+
+                                  {/* Section Repuestos Utilizados */}
+                                  <div className="space-y-4 pt-6 border-t border-slate-100">
+                                    <div className="flex items-center justify-between">
+                                      <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                        <Layers size={14} className="text-blue-600" />
+                                        Repuestos Utilizados
+                                      </h4>
+                                      <div className="flex gap-2">
+                                        <select 
+                                          className="text-[10px] bg-white border border-slate-200 rounded-lg px-3 py-1.5 font-bold outline-none cursor-pointer focus:ring-2 focus:ring-blue-600/10 transition-all shadow-sm"
+                                          onChange={async (e) => {
+                                            const partId = e.target.value;
+                                            if (!partId) return;
+                                            const sp = spareParts.find(p => p.id === partId);
+                                            if (!sp) return;
+                                            
+                                            const currentParts = order.usedParts || [];
+                                            const existing = currentParts.find(p => p.partId === partId);
+                                            
+                                            if (existing) {
+                                              handleManualNotification('El repuesto ya está en la lista.');
+                                              return;
+                                            }
+
+                                            const newParts = [...currentParts, { partId, partName: sp.name, quantity: 1, fullyUsed: true }];
+                                            await updateFirestoreDoc('orders', order.id, { usedParts: newParts });
+                                            await updateFirestoreDoc('spare_parts', sp.id, { stock: Math.max(0, sp.stock - 1) });
+                                            e.target.value = '';
+                                          }}
+                                        >
+                                          <option value="">+ Agregar Repuesto</option>
+                                          {spareParts.filter(sp => sp.stock > 0).map(sp => (
+                                            <option key={sp.id} value={sp.id}>{sp.name} (Stock: {sp.stock})</option>
+                                          ))}
+                                        </select>
+                                      </div>
+                                    </div>
+
+                                    {(!order.usedParts || order.usedParts.length === 0) ? (
+                                      <div className="py-8 text-center bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
+                                        <p className="text-[10px] text-slate-400 italic">No se han relacionado repuestos a esta orden.</p>
+                                      </div>
+                                    ) : (
+                                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        {order.usedParts.map((up, uidx) => (
+                                          <div key={uidx} className="bg-white border border-slate-100 rounded-2xl p-4 flex flex-col gap-3 shadow-sm hover:shadow-md transition-all group">
+                                            <div className="flex items-center justify-between">
+                                              <div className="flex items-center gap-2">
+                                                <div className="w-6 h-6 bg-blue-50 rounded flex items-center justify-center text-blue-600">
+                                                  <Package size={12} />
+                                                </div>
+                                                <span className="text-xs font-bold text-slate-700">{up.partName}</span>
+                                              </div>
+                                              <button 
+                                                onClick={async () => {
+                                                  const newParts = order.usedParts!.filter((_, i) => i !== uidx);
+                                                  await updateFirestoreDoc('orders', order.id, { usedParts: newParts });
+                                                  const sp = spareParts.find(p => p.id === up.partId);
+                                                  if (sp) await updateFirestoreDoc('spare_parts', sp.id, { stock: sp.stock + up.quantity });
+                                                }}
+                                                className="p-1.5 text-slate-300 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-all"
+                                              >
+                                                <Trash2 size={14} />
+                                              </button>
+                                            </div>
+                                            <div className="flex items-center justify-between pt-2 border-t border-slate-50">
+                                              <div className="flex items-center gap-3">
+                                                <button 
+                                                  onClick={async () => {
+                                                    if (up.quantity <= 1) return;
+                                                    const newParts = [...order.usedParts!];
+                                                    newParts[uidx].quantity -= 1;
+                                                    await updateFirestoreDoc('orders', order.id, { usedParts: newParts });
+                                                    const sp = spareParts.find(p => p.id === up.partId);
+                                                    if (sp) await updateFirestoreDoc('spare_parts', sp.id, { stock: sp.stock + 1 });
+                                                  }}
+                                                  className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded flex items-center justify-center text-slate-600 transition-colors"
+                                                >-</button>
+                                                <span className="text-sm font-black text-slate-900 w-4 text-center">{up.quantity}</span>
+                                                <button 
+                                                  onClick={async () => {
+                                                    const sp = spareParts.find(p => p.id === up.partId);
+                                                    if (!sp || sp.stock <= 0) return;
+                                                    const newParts = [...order.usedParts!];
+                                                    newParts[uidx].quantity += 1;
+                                                    await updateFirestoreDoc('orders', order.id, { usedParts: newParts });
+                                                    await updateFirestoreDoc('spare_parts', sp.id, { stock: sp.stock - 1 });
+                                                  }}
+                                                  className="w-6 h-6 bg-slate-100 hover:bg-slate-200 rounded flex items-center justify-center text-slate-600 transition-colors"
+                                                >+</button>
+                                              </div>
+                                              <button 
+                                                onClick={async () => {
+                                                  const newParts = [...order.usedParts!];
+                                                  newParts[uidx].fullyUsed = !newParts[uidx].fullyUsed;
+                                                  await updateFirestoreDoc('orders', order.id, { usedParts: newParts });
+                                                }}
+                                                className={cn(
+                                                  "px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter transition-all",
+                                                  up.fullyUsed ? "bg-emerald-50 text-emerald-600 ring-1 ring-emerald-500/20" : "bg-amber-50 text-amber-600 ring-1 ring-amber-500/20"
+                                                )}
+                                              >
+                                                {up.fullyUsed ? 'Uso Total' : 'Uso Parcial'}
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
 
@@ -851,7 +1151,52 @@ export default function WorkOrdersPage() {
               </div>
 
               <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-8 space-y-6 text-left">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Tipo de Orden</label>
+                  <div className="flex gap-2">
+                    <button 
+                      type="button"
+                      onClick={() => setFormData({...formData, type: 'MAINTENANCE'})}
+                      className={cn(
+                        "flex-1 py-2.5 rounded-xl border text-[10px] font-black transition-all uppercase tracking-widest",
+                        formData.type === 'MAINTENANCE' ? "bg-slate-900 text-white shadow-lg" : "bg-white text-slate-400 border-slate-200"
+                      )}
+                    >
+                      Mantenimiento
+                    </button>
+                    <button 
+                      type="button"
+                      onClick={() => setFormData({...formData, type: 'CALIBRATION'})}
+                      className={cn(
+                        "flex-1 py-2.5 rounded-xl border text-[10px] font-black transition-all uppercase tracking-widest",
+                        formData.type === 'CALIBRATION' ? "bg-violet-600 text-white shadow-xl shadow-violet-500/20" : "bg-white text-slate-400 border-slate-200"
+                      )}
+                    >
+                      Calibración
+                    </button>
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  {user?.role === 'ADMIN' && (
+                    <div className="md:col-span-2 p-4 bg-emerald-50 border border-emerald-100 rounded-2xl flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white">
+                          <CheckSquare size={18} />
+                        </div>
+                        <div>
+                          <p className="text-[10px] font-black text-emerald-800 uppercase tracking-widest leading-none">Validación de Administración</p>
+                          <p className="text-[9px] font-bold text-emerald-600 uppercase mt-1">La orden validada se marca en verde en el cronograma</p>
+                        </div>
+                      </div>
+                      <input 
+                        type="checkbox"
+                        className="w-5 h-5 text-emerald-600 rounded-lg border-emerald-200 focus:ring-emerald-500"
+                        checked={formData.validated}
+                        onChange={(e) => setFormData({...formData, validated: e.target.checked})}
+                      />
+                    </div>
+                  )}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Seleccionar Equipo</label>
                     <div className="relative">
@@ -993,10 +1338,10 @@ export default function WorkOrdersPage() {
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2">
                       <Users size={12} className="text-blue-600" />
-                      Asignar Personal
+                      Asignar Personal {selectedAssetLocationId && "(Filtrados por Sede)"}
                     </label>
                     <div className="flex flex-wrap gap-2 overflow-y-auto max-h-32 p-1">
-                      {activeTechs.map(tech => (
+                      {techniciansInLocation.map(tech => (
                         <button
                           key={tech.id}
                           type="button"
@@ -1030,6 +1375,98 @@ export default function WorkOrdersPage() {
                   </div>
                 </div>
 
+                <div className="space-y-4 pt-4 border-t border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 flex items-center gap-2">
+                      <Layers size={12} className="text-blue-600" />
+                      Repuestos Sugeridos (Opcional)
+                    </label>
+                    <div className="flex gap-2">
+                       <select 
+                         className="text-[10px] bg-white border border-slate-200 rounded-lg px-2 py-1 font-bold outline-none cursor-pointer"
+                         onChange={(e) => {
+                           const partId = e.target.value;
+                           if (!partId) return;
+                           const sp = spareParts.find(p => p.id === partId);
+                           if (!sp) return;
+                           
+                           const existing = formData.usedParts.find(p => p.partId === partId);
+                           if (existing) {
+                             handleManualNotification('El repuesto ya está en la lista.');
+                             return;
+                           }
+                           
+                           setFormData({
+                             ...formData,
+                             usedParts: [...formData.usedParts, { partId, partName: sp.name, quantity: 1, fullyUsed: true }]
+                           });
+                           e.target.value = '';
+                         }}
+                       >
+                         <option value="">+ Vincular Repuesto</option>
+                         {spareParts.filter(sp => sp.stock > 0).map(sp => (
+                           <option key={sp.id} value={sp.id}>{sp.name} ({sp.stock} disp.)</option>
+                         ))}
+                       </select>
+                    </div>
+                  </div>
+
+                  {formData.usedParts.length === 0 ? (
+                    <div className="p-3 text-center bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                       <span className="text-[9px] font-bold text-slate-400 uppercase">Sin repuestos vinculados inicialmente</span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {formData.usedParts.map((up, uidx) => (
+                        <div key={uidx} className="bg-white border border-slate-200 rounded-xl p-3 flex flex-col gap-2 shadow-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold text-slate-700 truncate w-4/5">{up.partName}</span>
+                            <button 
+                              type="button"
+                              onClick={() => {
+                                setFormData({
+                                  ...formData,
+                                  usedParts: formData.usedParts.filter((_, i) => i !== uidx)
+                                });
+                              }}
+                              className="text-rose-500 hover:text-rose-700"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <div className="flex items-center gap-2">
+                               <button 
+                                 type="button"
+                                 onClick={() => {
+                                   if (up.quantity <= 1) return;
+                                   const newParts = [...formData.usedParts];
+                                   newParts[uidx].quantity -= 1;
+                                   setFormData({...formData, usedParts: newParts});
+                                 }}
+                                 className="w-5 h-5 bg-slate-100 rounded flex items-center justify-center text-slate-500"
+                               >-</button>
+                               <span className="text-[10px] font-black">{up.quantity}</span>
+                               <button 
+                                 type="button"
+                                 onClick={() => {
+                                   const sp = spareParts.find(p => p.id === up.partId);
+                                   if (!sp || sp.stock <= up.quantity) return;
+                                   const newParts = [...formData.usedParts];
+                                   newParts[uidx].quantity += 1;
+                                   setFormData({...formData, usedParts: newParts});
+                                 }}
+                                 className="w-5 h-5 bg-slate-100 rounded flex items-center justify-center text-slate-500"
+                               >+</button>
+                            </div>
+                            <span className="text-[8px] font-black text-blue-600 uppercase">Reserva</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <div className="pt-4 flex gap-4">
                   <button 
                     type="submit"
@@ -1041,6 +1478,96 @@ export default function WorkOrdersPage() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {deleteConfirmId && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setDeleteConfirmId(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0">
+                  <Trash2 size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Confirmar Eliminación</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de que desea eliminar esta orden de trabajo? Esta acción se moverá al archivo de seguridad.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setDeleteConfirmId(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmDelete}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Eliminar Orden
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
+        {saveManagementConfirmOrder && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSaveManagementConfirmOrder(null)}
+              className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 0 }}
+              className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden p-8 text-left z-10"
+            >
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+                  <CheckSquare size={24} />
+                </div>
+                <div>
+                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight">Guardar Gestión</h3>
+                  <p className="text-slate-500 font-medium text-sm mt-1">
+                    ¿Está seguro de que desea guardar la gestión de esta orden? Se registrarán las tareas completadas y el costo de mantenimiento.
+                  </p>
+                </div>
+              </div>
+              <div className="flex gap-3 justify-end mt-8">
+                <button
+                  onClick={() => setSaveManagementConfirmOrder(null)}
+                  className="px-6 py-3 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors uppercase text-[11px] tracking-widest"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={confirmSaveManagement}
+                  className="px-6 py-3 rounded-xl font-bold text-white bg-blue-600 hover:bg-blue-700 shadow-lg shadow-blue-600/20 transition-all uppercase text-[11px] tracking-widest"
+                >
+                  Confirmar Guardar
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
